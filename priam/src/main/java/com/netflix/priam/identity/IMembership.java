@@ -18,13 +18,12 @@ package com.netflix.priam.identity;
 
 import com.google.inject.ImplementedBy;
 import com.netflix.priam.aws.AWSMembership;
-
 import java.util.Collection;
 import java.util.List;
 
 /**
- * Interface to manage membership meta information such as size of RAC, list of
- * nodes in RAC etc. Also perform ACL updates used in multi-regional clusters
+ * Interface to manage membership meta information such as size of RAC, list of nodes in RAC etc.
+ * Also perform ACL updates used in multi-regional clusters
  */
 @ImplementedBy(AWSMembership.class)
 public interface IMembership {
@@ -33,26 +32,24 @@ public interface IMembership {
      *
      * @return
      */
-    public List<String> getRacMembership();
+    List<String> getRacMembership();
 
-    /**
-     * @return Size of current RAC
-     */
-    public int getRacMembershipSize();
+    /** @return Size of current RAC */
+    int getRacMembershipSize();
 
     /**
      * Get a list of Instances in the cross-account but current RAC
      *
      * @return
      */
-    public List<String> getCrossAccountRacMembership();
+    List<String> getCrossAccountRacMembership();
 
     /**
      * Number of RACs
      *
      * @return
      */
-    public int getRacCount();
+    int getRacCount();
 
     /**
      * Add security group ACLs
@@ -61,7 +58,7 @@ public interface IMembership {
      * @param from
      * @param to
      */
-    public void addACL(Collection<String> listIPs, int from, int to);
+    void addACL(Collection<String> listIPs, int from, int to);
 
     /**
      * Remove security group ACLs
@@ -70,19 +67,19 @@ public interface IMembership {
      * @param from
      * @param to
      */
-    public void removeACL(Collection<String> listIPs, int from, int to);
+    void removeACL(Collection<String> listIPs, int from, int to);
 
     /**
      * List all ACLs
      *
      * @return
      */
-    public List<String> listACL(int from, int to);
+    List<String> listACL(int from, int to);
 
     /**
      * Expand the membership size by 1.
      *
      * @param count
      */
-    public void expandRacMembership(int count);
+    void expandRacMembership(int count);
 }

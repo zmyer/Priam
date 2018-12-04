@@ -4,7 +4,8 @@ package com.netflix.priam.scheduler
  * Created by aagrawal on 3/16/17.
  * This is used to test SchedulerType with all the values you might get.
  */
-import spock.lang.*
+import spock.lang.Specification
+import spock.lang.Unroll
 
 @Unroll
 class TestSchedulerType extends Specification{
@@ -14,7 +15,7 @@ class TestSchedulerType extends Specification{
         SchedulerType.lookup(schedulerType, acceptNullorEmpty, acceptIllegalValue)
 
         then:
-        def error = thrown(expectedException)
+        thrown(expectedException)
 
         where:
         schedulerType  | acceptNullorEmpty | acceptIllegalValue || expectedException

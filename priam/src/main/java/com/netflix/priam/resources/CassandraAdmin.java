@@ -18,14 +18,24 @@ package com.netflix.priam.resources;
 
 import com.google.common.collect.Lists;
 import com.google.inject.Inject;
-import com.netflix.priam.ICassandraProcess;
-import com.netflix.priam.IConfiguration;
+import com.netflix.priam.cluster.management.Compaction;
 import com.netflix.priam.cluster.management.Flush;
-import com.netflix.priam.cluster.management.IClusterManagement;
 import com.netflix.priam.compress.SnappyCompression;
+import com.netflix.priam.config.IConfiguration;
+import com.netflix.priam.defaultimpl.ICassandraProcess;
 import com.netflix.priam.utils.JMXConnectionException;
-import com.netflix.priam.utils.JMXConnectorMgr;
 import com.netflix.priam.utils.JMXNodeTool;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.text.DecimalFormat;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.Map.Entry;
+import java.util.concurrent.ExecutionException;
+import javax.ws.rs.*;
+import javax.ws.rs.core.MediaType;
+import javax.ws.rs.core.Response;
 import org.apache.cassandra.concurrent.JMXEnabledThreadPoolExecutorMBean;
 import org.apache.cassandra.db.ColumnFamilyStoreMBean;
 import org.apache.cassandra.db.compaction.CompactionManagerMBean;
@@ -38,22 +48,7 @@ import org.codehaus.jettison.json.JSONObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.ws.rs.*;
-import javax.ws.rs.core.MediaType;
-import javax.ws.rs.core.Response;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.text.DecimalFormat;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Map.Entry;
-import java.util.concurrent.ExecutionException;
-
-/**
- * Do general operations. Start/Stop and some JMX node tool commands
- */
+/** Do general operations. Start/Stop and some JMX node tool commands */
 @SuppressWarnings("deprecation")
 @Path("/v1/cassadmin")
 @Produces(MediaType.APPLICATION_JSON)
@@ -65,11 +60,19 @@ public class CassandraAdmin {
     private static final Logger logger = LoggerFactory.getLogger(CassandraAdmin.class);
     private IConfiguration config;
     private final ICassandraProcess cassProcess;
+    private final Flush flush;
+    private final Compaction compaction;
 
     @Inject
-    public CassandraAdmin(IConfiguration config, ICassandraProcess cassProcess) {
+    public CassandraAdmin(
+            IConfiguration config,
+            ICassandraProcess cassProcess,
+            Flush flush,
+            Compaction compaction) {
         this.config = config;
         this.cassProcess = cassProcess;
+        this.flush = flush;
+        this.compaction = compaction;
     }
 
     @GET
@@ -81,197 +84,190 @@ public class CassandraAdmin {
 
     @GET
     @Path("/stop")
-    public Response cassStop(@DefaultValue("false") @QueryParam("force") boolean force) throws IOException, InterruptedException, JSONException {
+    public Response cassStop(@DefaultValue("false") @QueryParam("force") boolean force)
+            throws IOException, InterruptedException, JSONException {
         cassProcess.stop(force);
         return Response.ok(REST_SUCCESS, MediaType.APPLICATION_JSON).build();
     }
 
     @GET
     @Path("/refresh")
-    public Response cassRefresh(@QueryParam(REST_HEADER_KEYSPACES) String keyspaces) throws IOException, ExecutionException, InterruptedException, JSONException {
+    public Response cassRefresh(@QueryParam(REST_HEADER_KEYSPACES) String keyspaces)
+            throws IOException, ExecutionException, InterruptedException, JSONException {
         logger.debug("node tool refresh is being called");
         if (StringUtils.isBlank(keyspaces))
             return Response.status(400).entity("Missing keyspace in request").build();
 
-        JMXNodeTool nodetool = null;
+        JMXNodeTool nodeTool;
         try {
-            nodetool = JMXNodeTool.instance(config);
+            nodeTool = JMXNodeTool.instance(config);
         } catch (JMXConnectionException e) {
-            logger.error("Exception in fetching c* jmx tool .  Msgl: {}", e.getLocalizedMessage(), e);
-            return Response.status(503).entity("JMXConnectionException")
-                    .build();
+            logger.error(
+                    "Exception in fetching c* jmx tool .  Msgl: {}", e.getLocalizedMessage(), e);
+            return Response.status(503).entity("JMXConnectionException").build();
         }
-        nodetool.refresh(Lists.newArrayList(keyspaces.split(",")));
+        nodeTool.refresh(Lists.newArrayList(keyspaces.split(",")));
         return Response.ok(REST_SUCCESS, MediaType.APPLICATION_JSON).build();
     }
 
     @GET
     @Path("/info")
     public Response cassInfo() throws IOException, InterruptedException, JSONException {
-        JMXNodeTool nodetool = null;
+        JMXNodeTool nodeTool;
         try {
-            nodetool = JMXNodeTool.instance(config);
+            nodeTool = JMXNodeTool.instance(config);
         } catch (JMXConnectionException e) {
-            logger.error("Exception in fetching c* jmx tool .  Msgl: {}", e.getLocalizedMessage(), e);
-            return Response.status(503).entity("JMXConnectionException")
-                    .build();
+            logger.error(
+                    "Exception in fetching c* jmx tool .  Msgl: {}", e.getLocalizedMessage(), e);
+            return Response.status(503).entity("JMXConnectionException").build();
         }
         logger.debug("node tool info being called");
-        return Response.ok(nodetool.info(), MediaType.APPLICATION_JSON).build();
+        return Response.ok(nodeTool.info(), MediaType.APPLICATION_JSON).build();
+    }
+
+    @GET
+    @Path("/partitioner")
+    public Response cassPartitioner() throws IOException, InterruptedException, JSONException {
+        JMXNodeTool nodeTool;
+        try {
+            nodeTool = JMXNodeTool.instance(config);
+        } catch (JMXConnectionException e) {
+            logger.error(
+                    "Exception in fetching c* jmx tool .  Msgl: {}", e.getLocalizedMessage(), e);
+            return Response.status(503).entity("JMXConnectionException").build();
+        }
+        logger.debug("node tool getPartitioner being called");
+        return Response.ok(nodeTool.getPartitioner(), MediaType.APPLICATION_JSON).build();
     }
 
     @GET
     @Path("/ring/{id}")
-    public Response cassRing(@PathParam("id") String keyspace) throws IOException, InterruptedException, JSONException {
-        JMXNodeTool nodetool = null;
+    public Response cassRing(@PathParam("id") String keyspace)
+            throws IOException, InterruptedException, JSONException {
+        JMXNodeTool nodeTool;
         try {
-            nodetool = JMXNodeTool.instance(config);
+            nodeTool = JMXNodeTool.instance(config);
         } catch (JMXConnectionException e) {
-            logger.error("Exception in fetching c* jmx tool .  Msgl: {}", e.getLocalizedMessage(), e);
-            return Response.status(503).entity("JMXConnectionException")
-                    .build();
+            logger.error(
+                    "Exception in fetching c* jmx tool .  Msgl: {}", e.getLocalizedMessage(), e);
+            return Response.status(503).entity("JMXConnectionException").build();
         }
         logger.debug("node tool ring being called");
-        return Response.ok(nodetool.ring(keyspace), MediaType.APPLICATION_JSON).build();
+        return Response.ok(nodeTool.ring(keyspace), MediaType.APPLICATION_JSON).build();
     }
 
     @GET
     @Path("/flush")
     public Response cassFlush() throws IOException, InterruptedException, ExecutionException {
-        JMXConnectorMgr connMgr = null;
-        try {
-            connMgr = new JMXConnectorMgr(config);
-        } catch (IOException | InterruptedException e) {
-            JSONObject rootObj = new JSONObject();
-            try {
-                rootObj.put("status", "ERRROR");
-                rootObj.put("component", "jmxconnector");
-                rootObj.put("desc", e.getLocalizedMessage());
-            } catch (Exception e1) {
-                return Response.status(503).entity("JMXConnector error")
-                        .build();
-            }
-            return Response.status(503).entity(rootObj)
-                    .build();
-        }
-
-        List<String> flushed = null;
-        try {
-            IClusterManagement task = new Flush(this.config, connMgr);
-            flushed = task.execute();
-        } catch (Exception e) {
-            JSONObject rootObj = new JSONObject();
-            try {
-                rootObj.put("status", "ERRROR");
-                rootObj.put("component", "flush");
-                rootObj.put("desc", e.getLocalizedMessage());
-            } catch (Exception e1) {
-                return Response.status(503).entity("Flush error")
-                        .build();
-            }
-            return Response.status(503).entity(rootObj)
-                    .build();
-        } finally {
-            connMgr.close();
-        }
-
         JSONObject rootObj = new JSONObject();
-        if (flushed != null && !flushed.isEmpty()) {
-            try {
-                rootObj.put("keyspace_flushed", flushed);
-            } catch (JSONException e) {
-                //no op
-            }
-        } else {
-            try {
-                rootObj.put("keyspace_flushed", "none");
-            } catch (JSONException e) {
-                //no op
-            }
-        }
 
-        return Response.ok().entity(rootObj).build();
+        try {
+            flush.execute();
+            rootObj.put("Flushed", true);
+            return Response.ok().entity(rootObj).build();
+        } catch (Exception e) {
+            try {
+                rootObj.put("status", "ERRROR");
+                rootObj.put("desc", e.getLocalizedMessage());
+            } catch (Exception e1) {
+                return Response.status(503).entity("FlushError").build();
+            }
+            return Response.status(503).entity(rootObj).build();
+        }
     }
 
     @GET
     @Path("/compact")
     public Response cassCompact() throws IOException, ExecutionException, InterruptedException {
-        JMXNodeTool nodetool = null;
+        JSONObject rootObj = new JSONObject();
+
         try {
-            nodetool = JMXNodeTool.instance(config);
-        } catch (JMXConnectionException e) {
-            logger.error("Exception in fetching c* jmx tool .  Msgl: {}", e.getLocalizedMessage(), e);
-            return Response.status(503).entity("JMXConnectionException")
-                    .build();
+            compaction.execute();
+            rootObj.put("Compcated", true);
+            return Response.ok().entity(rootObj).build();
+        } catch (Exception e) {
+            try {
+                rootObj.put("status", "ERRROR");
+                rootObj.put("desc", e.getLocalizedMessage());
+            } catch (Exception e1) {
+                return Response.status(503).entity("CompactionError").build();
+            }
+            return Response.status(503).entity(rootObj).build();
         }
-        logger.debug("node tool compact being called");
-        nodetool.compact();
-        return Response.ok().build();
     }
 
     @GET
     @Path("/cleanup")
     public Response cassCleanup() throws IOException, ExecutionException, InterruptedException {
-        JMXNodeTool nodetool = null;
+        JMXNodeTool nodeTool;
         try {
-            nodetool = JMXNodeTool.instance(config);
+            nodeTool = JMXNodeTool.instance(config);
         } catch (JMXConnectionException e) {
-            logger.error("Exception in fetching c* jmx tool .  Msgl: {}", e.getLocalizedMessage(), e);
-            return Response.status(503).entity("JMXConnectionException")
-                    .build();
+            logger.error(
+                    "Exception in fetching c* jmx tool .  Msgl: {}", e.getLocalizedMessage(), e);
+            return Response.status(503).entity("JMXConnectionException").build();
         }
         logger.debug("node tool cleanup being called");
-        nodetool.cleanup();
+        nodeTool.cleanup();
         return Response.ok().build();
     }
 
     @GET
     @Path("/repair")
-    public Response cassRepair(@QueryParam("sequential") boolean isSequential, @QueryParam("localDC") boolean localDCOnly, @DefaultValue("false") @QueryParam("primaryRange") boolean primaryRange) throws IOException, ExecutionException, InterruptedException {
-        JMXNodeTool nodetool = null;
+    public Response cassRepair(
+            @QueryParam("sequential") boolean isSequential,
+            @QueryParam("localDC") boolean localDCOnly,
+            @DefaultValue("false") @QueryParam("primaryRange") boolean primaryRange)
+            throws IOException, ExecutionException, InterruptedException {
+        JMXNodeTool nodeTool;
         try {
-            nodetool = JMXNodeTool.instance(config);
+            nodeTool = JMXNodeTool.instance(config);
         } catch (JMXConnectionException e) {
-            logger.error("Exception in fetching c* jmx tool .  Msgl: {}", e.getLocalizedMessage(), e);
-            return Response.status(503).entity("JMXConnectionException")
-                    .build();
+            logger.error(
+                    "Exception in fetching c* jmx tool .  Msgl: {}", e.getLocalizedMessage(), e);
+            return Response.status(503).entity("JMXConnectionException").build();
         }
         logger.debug("node tool repair being called");
-        nodetool.repair(isSequential, localDCOnly, primaryRange);
+        nodeTool.repair(isSequential, localDCOnly, primaryRange);
         return Response.ok(REST_SUCCESS, MediaType.APPLICATION_JSON).build();
     }
 
     @GET
     @Path("/version")
     public Response version() throws IOException, ExecutionException, InterruptedException {
-        JMXNodeTool nodetool = null;
+        JMXNodeTool nodeTool;
         try {
-            nodetool = JMXNodeTool.instance(config);
+            nodeTool = JMXNodeTool.instance(config);
         } catch (JMXConnectionException e) {
-            logger.error("Exception in fetching c* jmx tool .  Msgl: {}", e.getLocalizedMessage(), e);
-            return Response.status(503).entity("JMXConnectionException")
-                    .build();
+            logger.error(
+                    "Exception in fetching c* jmx tool .  Msgl: {}", e.getLocalizedMessage(), e);
+            return Response.status(503).entity("JMXConnectionException").build();
         }
-        return Response.ok(new JSONArray().put(nodetool.getReleaseVersion()), MediaType.APPLICATION_JSON).build();
+        return Response.ok(
+                        new JSONArray().put(nodeTool.getReleaseVersion()),
+                        MediaType.APPLICATION_JSON)
+                .build();
     }
 
     @GET
     @Path("/tpstats")
-    public Response tpstats() throws IOException, ExecutionException, InterruptedException, JSONException {
-        JMXNodeTool nodetool = null;
+    public Response tpstats()
+            throws IOException, ExecutionException, InterruptedException, JSONException {
+        JMXNodeTool nodeTool;
         try {
-            nodetool = JMXNodeTool.instance(config);
+            nodeTool = JMXNodeTool.instance(config);
         } catch (JMXConnectionException e) {
-            logger.error("Exception in fetching c* jmx tool .  Msgl: {}", e.getLocalizedMessage(), e);
-            return Response.status(503).entity("JMXConnectionException")
-                    .build();
+            logger.error(
+                    "Exception in fetching c* jmx tool .  Msgl: {}", e.getLocalizedMessage(), e);
+            return Response.status(503).entity("JMXConnectionException").build();
         }
-        Iterator<Map.Entry<String, JMXEnabledThreadPoolExecutorMBean>> threads = nodetool.getThreadPoolMBeanProxies();
+        Iterator<Map.Entry<String, JMXEnabledThreadPoolExecutorMBean>> threads =
+                nodeTool.getThreadPoolMBeanProxies();
         JSONArray threadPoolArray = new JSONArray();
         while (threads.hasNext()) {
             Entry<String, JMXEnabledThreadPoolExecutorMBean> thread = threads.next();
             JMXEnabledThreadPoolExecutorMBean threadPoolProxy = thread.getValue();
-            JSONObject tpObj = new JSONObject();// "Pool Name", "Active",
+            JSONObject tpObj = new JSONObject(); // "Pool Name", "Active",
             // "Pending", "Completed",
             // "Blocked", "All time blocked"
             tpObj.put("pool name", thread.getKey());
@@ -283,7 +279,7 @@ public class CassandraAdmin {
             threadPoolArray.put(tpObj);
         }
         JSONObject droppedMsgs = new JSONObject();
-        for (Entry<String, Integer> entry : nodetool.getDroppedMessages().entrySet())
+        for (Entry<String, Integer> entry : nodeTool.getDroppedMessages().entrySet())
             droppedMsgs.put(entry.getKey(), entry.getValue());
 
         JSONObject rootObj = new JSONObject();
@@ -295,17 +291,18 @@ public class CassandraAdmin {
 
     @GET
     @Path("/compactionstats")
-    public Response compactionStats() throws IOException, ExecutionException, InterruptedException, JSONException {
-        JMXNodeTool nodetool = null;
+    public Response compactionStats()
+            throws IOException, ExecutionException, InterruptedException, JSONException {
+        JMXNodeTool nodeTool;
         try {
-            nodetool = JMXNodeTool.instance(config);
+            nodeTool = JMXNodeTool.instance(config);
         } catch (JMXConnectionException e) {
-            logger.error("Exception in fetching c* jmx tool .  Msgl: {}", e.getLocalizedMessage(), e);
-            return Response.status(503).entity("JMXConnectionException")
-                    .build();
+            logger.error(
+                    "Exception in fetching c* jmx tool .  Msgl: {}", e.getLocalizedMessage(), e);
+            return Response.status(503).entity("JMXConnectionException").build();
         }
         JSONObject rootObj = new JSONObject();
-        CompactionManagerMBean cm = nodetool.getCompactionManagerProxy();
+        CompactionManagerMBean cm = nodeTool.getCompactionManagerProxy();
         rootObj.put("pending tasks", cm.getPendingTasks());
         JSONArray compStats = new JSONArray();
         for (Map<String, String> c : cm.getCompactions()) {
@@ -316,7 +313,15 @@ public class CassandraAdmin {
             cObj.put("bytesComplete", c.get("bytesComplete"));
             cObj.put("totalBytes", c.get("totalBytes"));
             cObj.put("taskType", c.get("taskType"));
-            String percentComplete = new Long(c.get("totalBytes")) == 0 ? "n/a" : new DecimalFormat("0.00").format((double) new Long(c.get("bytesComplete")) / new Long(c.get("totalBytes")) * 100) + "%";
+            String percentComplete =
+                    new Long(c.get("totalBytes")) == 0
+                            ? "n/a"
+                            : new DecimalFormat("0.00")
+                                            .format(
+                                                    (double) new Long(c.get("bytesComplete"))
+                                                            / new Long(c.get("totalBytes"))
+                                                            * 100)
+                                    + "%";
             cObj.put("progress", percentComplete);
             compStats.put(cObj);
         }
@@ -327,95 +332,104 @@ public class CassandraAdmin {
     @GET
     @Path("/disablegossip")
     public Response disablegossip() throws IOException, ExecutionException, InterruptedException {
-        JMXNodeTool nodetool = null;
+        JMXNodeTool nodeTool;
         try {
-            nodetool = JMXNodeTool.instance(config);
+            nodeTool = JMXNodeTool.instance(config);
         } catch (JMXConnectionException e) {
-            logger.error("Exception in fetching c* jmx tool .  Msgl: {}", e.getLocalizedMessage(), e);
-            return Response.status(503).entity("JMXConnectionException")
-                    .build();
+            logger.error(
+                    "Exception in fetching c* jmx tool .  Msgl: {}", e.getLocalizedMessage(), e);
+            return Response.status(503).entity("JMXConnectionException").build();
         }
-        nodetool.stopGossiping();
+        nodeTool.stopGossiping();
         return Response.ok(REST_SUCCESS, MediaType.APPLICATION_JSON).build();
     }
 
     @GET
     @Path("/enablegossip")
     public Response enablegossip() throws IOException, ExecutionException, InterruptedException {
-        JMXNodeTool nodetool = null;
+        JMXNodeTool nodeTool;
         try {
-            nodetool = JMXNodeTool.instance(config);
+            nodeTool = JMXNodeTool.instance(config);
         } catch (JMXConnectionException e) {
-            logger.error("Exception in fetching c* jmx tool .  Msgl: {}", e.getLocalizedMessage(), e);
-            return Response.status(503).entity("JMXConnectionException")
-                    .build();
+            logger.error(
+                    "Exception in fetching c* jmx tool .  Msgl: {}", e.getLocalizedMessage(), e);
+            return Response.status(503).entity("JMXConnectionException").build();
         }
-        nodetool.startGossiping();
+        nodeTool.startGossiping();
         return Response.ok(REST_SUCCESS, MediaType.APPLICATION_JSON).build();
     }
 
     @GET
     @Path("/disablethrift")
     public Response disablethrift() throws IOException, ExecutionException, InterruptedException {
-        JMXNodeTool nodetool = null;
+        JMXNodeTool nodeTool;
         try {
-            nodetool = JMXNodeTool.instance(config);
+            nodeTool = JMXNodeTool.instance(config);
         } catch (JMXConnectionException e) {
-            logger.error("Exception in fetching c* jmx tool .  Msgl: {}", e.getLocalizedMessage(), e);
-            return Response.status(503).entity("JMXConnectionException")
-                    .build();
+            logger.error(
+                    "Exception in fetching c* jmx tool .  Msgl: {}", e.getLocalizedMessage(), e);
+            return Response.status(503).entity("JMXConnectionException").build();
         }
-        nodetool.stopThriftServer();
+        nodeTool.stopThriftServer();
         return Response.ok(REST_SUCCESS, MediaType.APPLICATION_JSON).build();
     }
 
     @GET
     @Path("/enablethrift")
     public Response enablethrift() throws IOException, ExecutionException, InterruptedException {
-        JMXNodeTool nodetool = null;
+        JMXNodeTool nodeTool;
         try {
-            nodetool = JMXNodeTool.instance(config);
+            nodeTool = JMXNodeTool.instance(config);
         } catch (JMXConnectionException e) {
-            logger.error("Exception in fetching c* jmx tool .  Msgl: {}", e.getLocalizedMessage(), e);
-            return Response.status(503).entity("JMXConnectionException")
-                    .build();
+            logger.error(
+                    "Exception in fetching c* jmx tool .  Msgl: {}", e.getLocalizedMessage(), e);
+            return Response.status(503).entity("JMXConnectionException").build();
         }
-        nodetool.startThriftServer();
+        nodeTool.startThriftServer();
         return Response.ok(REST_SUCCESS, MediaType.APPLICATION_JSON).build();
     }
 
     @GET
     @Path("/statusthrift")
-    public Response statusthrift() throws IOException, ExecutionException, InterruptedException, JSONException {
-        JMXNodeTool nodetool = null;
+    public Response statusthrift()
+            throws IOException, ExecutionException, InterruptedException, JSONException {
+        JMXNodeTool nodeTool;
         try {
-            nodetool = JMXNodeTool.instance(config);
+            nodeTool = JMXNodeTool.instance(config);
         } catch (JMXConnectionException e) {
-            logger.error("Exception in fetching c* jmx tool .  Msgl: {}", e.getLocalizedMessage(), e);
-            return Response.status(503).entity("JMXConnectionException")
-                    .build();
+            logger.error(
+                    "Exception in fetching c* jmx tool .  Msgl: {}", e.getLocalizedMessage(), e);
+            return Response.status(503).entity("JMXConnectionException").build();
         }
-        return Response.ok(new JSONObject().put("status", (nodetool.isThriftServerRunning() ? "running" : "not running")), MediaType.APPLICATION_JSON).build();
+        return Response.ok(
+                        new JSONObject()
+                                .put(
+                                        "status",
+                                        (nodeTool.isThriftServerRunning()
+                                                ? "running"
+                                                : "not running")),
+                        MediaType.APPLICATION_JSON)
+                .build();
     }
 
     @GET
     @Path("/gossipinfo")
-    public Response gossipinfo() throws IOException, ExecutionException, InterruptedException, JSONException {
-        JMXNodeTool nodetool = null;
+    public Response gossipinfo()
+            throws IOException, ExecutionException, InterruptedException, JSONException {
+        JMXNodeTool nodeTool;
         try {
-            nodetool = JMXNodeTool.instance(config);
+            nodeTool = JMXNodeTool.instance(config);
         } catch (JMXConnectionException e) {
-            logger.error("Exception in fetching c* jmx tool .  Msgl: {}", e.getLocalizedMessage(), e);
-            return Response.status(503).entity("JMXConnectionException")
-                    .build();
+            logger.error(
+                    "Exception in fetching c* jmx tool .  Msgl: {}", e.getLocalizedMessage(), e);
+            return Response.status(503).entity("JMXConnectionException").build();
         }
-        JSONObject rootObj = parseGossipInfo(nodetool.getGossipInfo());
+        JSONObject rootObj = parseGossipInfo(nodeTool.getGossipInfo());
         return Response.ok(rootObj, MediaType.APPLICATION_JSON).build();
     }
 
-
     // helper method for parsing, to be tested easily
-    protected static JSONObject parseGossipInfo(String gossipinfo) throws JSONException {
+    private static JSONObject parseGossipInfo(String gossipinfo) throws JSONException {
         String[] ginfo = gossipinfo.split("\n");
         JSONObject rootObj = new JSONObject();
         JSONObject obj = new JSONObject();
@@ -440,177 +454,177 @@ public class CassandraAdmin {
                 }
             }
         }
-        if (StringUtils.isNotBlank(key))
-            rootObj.put(key, obj);
+        if (StringUtils.isNotBlank(key)) rootObj.put(key, obj);
         return rootObj;
     }
 
     @GET
     @Path("/netstats")
-    public Response netstats(@QueryParam("host") String hostname) throws IOException, ExecutionException, InterruptedException, JSONException {
+    public Response netstats(@QueryParam("host") String hostname)
+            throws IOException, ExecutionException, InterruptedException, JSONException {
 
         throw new UnsupportedOperationException("Need to use C* 2.x apis.");
 
-    	/* * * * * Will refactor later to use 2.x C* apis, comment out for now for success compilation...
-
-        JMXNodeTool nodetool = null;
-		try {
-			nodetool = JMXNodeTool.instance(config);
-		} catch (JMXConnectionException e) {
-			logger.error("Exception in fetching c* jmx tool .  Msgl: " + e.getLocalizedMessage(), e);
-			return Response.status(503).entity("JMXConnectionException")
-					.build();
-		}
-        JSONObject rootObj = new JSONObject();
-        rootObj.put("mode", nodetool.getOperationMode());
-        final InetAddress addr = (hostname == null) ? null : InetAddress.getByName(hostname);
-        Set<InetAddress> hosts = addr == null ? nodetool.getStreamDestinations() : new HashSet<InetAddress>()
-        {
-            {
-                add(addr);
-            }
-        };
-        if (hosts.size() == 0)
-            rootObj.put("sending", "Not sending any streams.");
-
-        JSONObject hostSendStats = new JSONObject();
-        for (InetAddress host : hosts)
-        {
-            try
-            {
-                List<String> files = nodetool.getFilesDestinedFor(host);
-                if (files.size() > 0)
-                {
-                    JSONArray fObj = new JSONArray();
-                    for (String file : files)
-                        fObj.put(file);
-                    hostSendStats.put(host.getHostAddress(), fObj);
-                }
-            }
-            catch (IOException ex)
-            {
-                hostSendStats.put(host.getHostAddress(), "Error retrieving file data");
-            }
+        /* * * * * Will refactor later to use 2.x C* apis, comment out for now for success compilation...
+              JMXNodeTool nodetool = null;
+        try {
+        	nodetool = JMXNodeTool.instance(config);
+        } catch (JMXConnectionException e) {
+        	logger.error("Exception in fetching c* jmx tool .  Msgl: " + e.getLocalizedMessage(), e);
+        	return Response.status(503).entity("JMXConnectionException")
+        			.build();
         }
+              JSONObject rootObj = new JSONObject();
+              rootObj.put("mode", nodetool.getOperationMode());
+              final InetAddress addr = (hostname == null) ? null : InetAddress.getByName(hostname);
+              Set<InetAddress> hosts = addr == null ? nodetool.getStreamDestinations() : new HashSet<InetAddress>()
+              {
+                  {
+                      add(addr);
+                  }
+              };
+              if (hosts.size() == 0)
+                  rootObj.put("sending", "Not sending any streams.");
+              JSONObject hostSendStats = new JSONObject();
+              for (InetAddress host : hosts)
+              {
+                  try
+                  {
+                      List<String> files = nodetool.getFilesDestinedFor(host);
+                      if (files.size() > 0)
+                      {
+                          JSONArray fObj = new JSONArray();
+                          for (String file : files)
+                              fObj.put(file);
+                          hostSendStats.put(host.getHostAddress(), fObj);
+                      }
+                  }
+                  catch (IOException ex)
+                  {
+                      hostSendStats.put(host.getHostAddress(), "Error retrieving file data");
+                  }
+              }
+              rootObj.put("hosts sending", hostSendStats);
+              hosts = addr == null ? nodetool.getStreamSources() : new HashSet<InetAddress>()
+              {
+                  {
+                      add(addr);
+                  }
+              };
+              if (hosts.size() == 0)
+                  rootObj.put("receiving", "Not receiving any streams.");
+              JSONObject hostRecvStats = new JSONObject();
+              for (InetAddress host : hosts)
+              {
+                  try
+                  {
+                      List<String> files = nodetool.getIncomingFiles(host);
+                      if (files.size() > 0)
+                      {
+                          JSONArray fObj = new JSONArray();
+                          for (String file : files)
+                              fObj.put(file);
+                          hostRecvStats.put(host.getHostAddress(), fObj);
+                      }
+                  }
+                  catch (IOException ex)
+                  {
+                      hostRecvStats.put(host.getHostAddress(), "Error retrieving file data");
+                  }
+              }
+              rootObj.put("hosts receiving", hostRecvStats);
+              MessagingServiceMBean ms = nodetool.msProxy;
+              int pending;
+              long completed;
+              pending = 0;
+              for (int n : ms.getCommandPendingTasks().values())
+                  pending += n;
+              completed = 0;
+              for (long n : ms.getCommandCompletedTasks().values())
+                  completed += n;
+              JSONObject cObj = new JSONObject();
+              cObj.put("active", "n/a");
+              cObj.put("pending", pending);
+              cObj.put("completed", completed);
+              rootObj.put("commands", cObj);
+              pending = 0;
+              for (int n : ms.getResponsePendingTasks().values())
+                  pending += n;
+              completed = 0;
+              for (long n : ms.getResponseCompletedTasks().values())
+                  completed += n;
+              JSONObject rObj = new JSONObject();
+              rObj.put("active", "n/a");
+              rObj.put("pending", pending);
+              rObj.put("completed", completed);
+              rootObj.put("responses", rObj);
+              return Response.ok(rootObj, MediaType.APPLICATION_JSON).build();
 
-        rootObj.put("hosts sending", hostSendStats);
-        hosts = addr == null ? nodetool.getStreamSources() : new HashSet<InetAddress>()
-        {
-            {
-                add(addr);
-            }
-        };
-        if (hosts.size() == 0)
-            rootObj.put("receiving", "Not receiving any streams.");
-
-        JSONObject hostRecvStats = new JSONObject();
-        for (InetAddress host : hosts)
-        {
-            try
-            {
-                List<String> files = nodetool.getIncomingFiles(host);
-                if (files.size() > 0)
-                {
-                    JSONArray fObj = new JSONArray();
-                    for (String file : files)
-                        fObj.put(file);
-                    hostRecvStats.put(host.getHostAddress(), fObj);
-                }
-            }
-            catch (IOException ex)
-            {
-                hostRecvStats.put(host.getHostAddress(), "Error retrieving file data");
-            }
-        }
-        rootObj.put("hosts receiving", hostRecvStats);
-
-        MessagingServiceMBean ms = nodetool.msProxy;
-        int pending;
-        long completed;
-        pending = 0;
-        for (int n : ms.getCommandPendingTasks().values())
-            pending += n;
-        completed = 0;
-        for (long n : ms.getCommandCompletedTasks().values())
-            completed += n;
-        JSONObject cObj = new JSONObject();
-        cObj.put("active", "n/a");
-        cObj.put("pending", pending);
-        cObj.put("completed", completed);
-        rootObj.put("commands", cObj);
-
-        pending = 0;
-        for (int n : ms.getResponsePendingTasks().values())
-            pending += n;
-        completed = 0;
-        for (long n : ms.getResponseCompletedTasks().values())
-            completed += n;
-        JSONObject rObj = new JSONObject();
-        rObj.put("active", "n/a");
-        rObj.put("pending", pending);
-        rObj.put("completed", completed);
-        rootObj.put("responses", rObj);
-        return Response.ok(rootObj, MediaType.APPLICATION_JSON).build();
-        
-        * * */
+              * * */
     }
 
     @GET
     @Path("/move")
-    public Response moveToken(@QueryParam(REST_HEADER_TOKEN) String newToken) throws IOException, ExecutionException, InterruptedException, ConfigurationException {
-        JMXNodeTool nodetool = null;
+    public Response moveToken(@QueryParam(REST_HEADER_TOKEN) String newToken)
+            throws IOException, ExecutionException, InterruptedException, ConfigurationException {
+        JMXNodeTool nodeTool;
         try {
-            nodetool = JMXNodeTool.instance(config);
+            nodeTool = JMXNodeTool.instance(config);
         } catch (JMXConnectionException e) {
-            logger.error("Exception in fetching c* jmx tool .  Msgl: {}", e.getLocalizedMessage(), e);
-            return Response.status(503).entity("JMXConnectionException")
-                    .build();
+            logger.error(
+                    "Exception in fetching c* jmx tool .  Msgl: {}", e.getLocalizedMessage(), e);
+            return Response.status(503).entity("JMXConnectionException").build();
         }
-        nodetool.move(newToken);
+        nodeTool.move(newToken);
         return Response.ok(REST_SUCCESS, MediaType.APPLICATION_JSON).build();
     }
 
     @GET
     @Path("/scrub")
-    public Response scrub(@QueryParam(REST_HEADER_KEYSPACES) String keyspaces, @QueryParam(REST_HEADER_CFS) String cfnames) throws IOException, ExecutionException, InterruptedException,
-            ConfigurationException {
-        throw new UnsupportedOperationException("Unsupported...waiting for Jason to resolve compile error.");
+    public Response scrub(
+            @QueryParam(REST_HEADER_KEYSPACES) String keyspaces,
+            @QueryParam(REST_HEADER_CFS) String cfnames)
+            throws IOException, ExecutionException, InterruptedException, ConfigurationException {
+        throw new UnsupportedOperationException(
+                "Unsupported...waiting for Jason to resolve compile error.");
         /*
-        JMXNodeTool nodetool = null;
-		try {
-			nodetool = JMXNodeTool.instance(config);
-		} catch (JMXConnectionException e) {
-			logger.error("Exception in fetching c* jmx tool .  Msgl: " + e.getLocalizedMessage(), e);
-			return Response.status(503).entity("JMXConnectionException")
-					.build();
-		}
-        String[] cfs = null;
-        if (StringUtils.isNotBlank(cfnames))
-            cfs = cfnames.split(",");
-        if (cfs == null)
-            nodetool.scrub(keyspaces);
-        else
-            nodetool.scrub(keyspaces, cfs);
-        return Response.ok(REST_SUCCESS, MediaType.APPLICATION_JSON).build();
-        */
+              JMXNodeTool nodetool = null;
+        try {
+        	nodetool = JMXNodeTool.instance(config);
+        } catch (JMXConnectionException e) {
+        	logger.error("Exception in fetching c* jmx tool .  Msgl: " + e.getLocalizedMessage(), e);
+        	return Response.status(503).entity("JMXConnectionException")
+        			.build();
+        }
+              String[] cfs = null;
+              if (StringUtils.isNotBlank(cfnames))
+                  cfs = cfnames.split(",");
+              if (cfs == null)
+                  nodetool.scrub(keyspaces);
+              else
+                  nodetool.scrub(keyspaces, cfs);
+              return Response.ok(REST_SUCCESS, MediaType.APPLICATION_JSON).build();
+              */
     }
 
     @GET
     @Path("/cfhistograms")
-    public Response cfhistograms(@QueryParam(REST_HEADER_KEYSPACES) String keyspace, @QueryParam(REST_HEADER_CFS) String cfname) throws IOException, ExecutionException, InterruptedException,
-            JSONException {
-        JMXNodeTool nodetool = null;
+    public Response cfhistograms(
+            @QueryParam(REST_HEADER_KEYSPACES) String keyspace,
+            @QueryParam(REST_HEADER_CFS) String cfname)
+            throws IOException, ExecutionException, InterruptedException, JSONException {
+        JMXNodeTool nodeTool;
         try {
-            nodetool = JMXNodeTool.instance(config);
+            nodeTool = JMXNodeTool.instance(config);
         } catch (JMXConnectionException e) {
-            logger.error("Exception in fetching c* jmx tool .  Msgl: {}", e.getLocalizedMessage(), e);
-            return Response.status(503).entity("JMXConnectionException")
-                    .build();
+            logger.error(
+                    "Exception in fetching c* jmx tool .  Msgl: {}", e.getLocalizedMessage(), e);
+            return Response.status(503).entity("JMXConnectionException").build();
         }
         if (StringUtils.isBlank(keyspace) || StringUtils.isBlank(cfname))
             return Response.status(400).entity("Missing keyspace/cfname in request").build();
 
-        ColumnFamilyStoreMBean store = nodetool.getCfsProxy(keyspace, cfname);
+        ColumnFamilyStoreMBean store = nodeTool.getCfsProxy(keyspace, cfname);
 
         // default is 90 offsets
         long[] offsets = new EstimatedHistogram().getBucketOffsets();
@@ -648,16 +662,16 @@ public class CassandraAdmin {
     @GET
     @Path("/drain")
     public Response cassDrain() throws IOException, ExecutionException, InterruptedException {
-        JMXNodeTool nodetool = null;
+        JMXNodeTool nodeTool;
         try {
-            nodetool = JMXNodeTool.instance(config);
+            nodeTool = JMXNodeTool.instance(config);
         } catch (JMXConnectionException e) {
-            logger.error("Exception in fetching c* jmx tool .  Msgl: {}", e.getLocalizedMessage(), e);
-            return Response.status(503).entity("JMXConnectionException")
-                    .build();
+            logger.error(
+                    "Exception in fetching c* jmx tool .  Msgl: {}", e.getLocalizedMessage(), e);
+            return Response.status(503).entity("JMXConnectionException").build();
         }
         logger.debug("node tool drain being called");
-        nodetool.drain();
+        nodeTool.drain();
         return Response.ok(REST_SUCCESS, MediaType.APPLICATION_JSON).build();
     }
 
@@ -668,7 +682,8 @@ public class CassandraAdmin {
     */
     @GET
     @Path("/decompress")
-    public Response decompress(@QueryParam("in") String in, @QueryParam("out") String out) throws Exception {
+    public Response decompress(@QueryParam("in") String in, @QueryParam("out") String out)
+            throws Exception {
         SnappyCompression compress = new SnappyCompression();
         compress.decompressAndClose(new FileInputStream(in), new FileOutputStream(out));
         JSONObject object = new JSONObject();
@@ -676,5 +691,4 @@ public class CassandraAdmin {
         object.put("Output decompress file", out);
         return Response.ok(object.toString(), MediaType.APPLICATION_JSON).build();
     }
-
 }

@@ -17,7 +17,6 @@
 package com.netflix.priam.compress;
 
 import com.google.inject.ImplementedBy;
-
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -25,18 +24,26 @@ import java.util.Iterator;
 
 @ImplementedBy(SnappyCompression.class)
 public interface ICompression {
+
+    enum CompressionAlgorithm {
+        SNAPPY,
+        LZ4,
+        NONE
+    }
+
     /**
-     * Uncompress the input stream and write to the output stream.
-     * Closes both input and output streams
+     * Uncompress the input stream and write to the output stream. Closes both input and output
+     * streams
      */
-    public void decompressAndClose(InputStream input, OutputStream output) throws IOException;
+    void decompressAndClose(InputStream input, OutputStream output) throws IOException;
 
     /**
      * Produces chunks of compressed data.
+     *
      * @param is inputstream to be compressed.
      * @param chunkSize compress the stream and return it in parts of chunk
      * @return compressed byte array iterator
      * @throws IOException
      */
-    public Iterator<byte[]> compress(InputStream is, long chunkSize) throws IOException;
+    Iterator<byte[]> compress(InputStream is, long chunkSize) throws IOException;
 }
